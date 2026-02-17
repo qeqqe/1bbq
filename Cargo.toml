@@ -3,4 +3,9 @@ name = "onebbq"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+lto = "fat"
+panic = "abort"
+debug = true
+target-cpu = "native"
 [dependencies]
