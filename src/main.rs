@@ -1,6 +1,6 @@
 use core::f64;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     io::{BufRead, BufReader},
 };
@@ -51,7 +51,7 @@ fn main() {
                 stations.insert(
                     station.to_owned(),
                     StationData {
-                        total: 0.0,
+                        total: 1.0,
                         min: temp,
                         max: temp,
                         accumulate: temp,
@@ -60,6 +60,8 @@ fn main() {
             }
         }
     }
+
+    let stations = BTreeMap::from_iter(stations);
 
     for (station, stats) in stations {
         print!(
