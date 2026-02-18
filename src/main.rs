@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
     io::{BufRead, BufReader},
-    str::from_utf8,
+    str::from_utf8_unchecked,
 };
 
 struct StationData {
@@ -36,7 +36,7 @@ fn main() {
         let mut fields = line.splitn(2, |c| *c == b';');
         let station = fields.next().unwrap();
         let temp = fields.next().unwrap();
-        let temp: f64 = from_utf8(temp).unwrap().parse().unwrap();
+        let temp: f64 = unsafe { from_utf8_unchecked(temp) }.parse().unwrap();
         match stations.get_mut(station) {
             Some(entry) => {
                 entry.total += 1.0;
@@ -68,7 +68,7 @@ fn main() {
     let stations = BTreeMap::from_iter(
         stations
             .into_iter()
-            .map(|(k, v)| (String::from_utf8(k).unwrap(), v)),
+            .map(|(k, v)| (unsafe { String::from_utf8_unchecked(k) }, v)),
     );
 
     for (station, stats) in stations {
