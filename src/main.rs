@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
     io::{BufRead, BufReader},
+    str::from_utf8,
 };
 
 struct StationData {
@@ -24,15 +25,18 @@ impl Default for StationData {
 }
 
 fn main() {
-    let mut stations: HashMap<String, StationData> = HashMap::new();
+    let mut stations: HashMap<Vec<u8>, StationData> = HashMap::new();
 
     let file = File::open("measurements/measurements.txt").unwrap();
 
     let reader = BufReader::new(file);
 
-    for line in reader.lines().map(|l| l.unwrap()) {
-        let (station, temp) = line.split_once(';').unwrap();
-        let temp: f64 = temp.parse().unwrap();
+    for line in reader.split(b'\n') {
+        let line = line.unwrap();
+        let mut fields = line.splitn(2, |c| *c == b';');
+        let station = fields.next().unwrap();
+        let temp = fields.next().unwrap();
+        let temp: f64 = from_utf8(temp).unwrap().parse().unwrap();
         match stations.get_mut(station) {
             Some(entry) => {
                 entry.total += 1.0;
@@ -61,11 +65,16 @@ fn main() {
         }
     }
 
-    let stations = BTreeMap::from_iter(stations);
+    let stations = BTreeMap::from_iter(
+        stations
+            .into_iter()
+            .map(|(k, v)| (String::from_utf8(k).unwrap(), v)),
+    );
 
     for (station, stats) in stations {
         print!(
-            "{{{station}={}/{:.1}/{:.1}}}, ",
+            "{{{:?}={}/{:.1}/{:.1}}}, ",
+            station,
             stats.min,
             stats.accumulate / stats.total,
             stats.max
