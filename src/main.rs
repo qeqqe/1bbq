@@ -23,7 +23,7 @@ impl Default for StationData {
 }
 
 fn main() {
-    let mut stations: FastHashMap<Vec<u8>, StationData> = FastHashMap::default();
+    let mut stations: FastHashMap<&[u8], StationData> = FastHashMap::default();
 
     let file = File::open("measurements/measurements.txt").unwrap();
 
@@ -54,7 +54,7 @@ fn main() {
             }
             None => {
                 stations.insert(
-                    station.to_owned(),
+                    station,
                     StationData {
                         total: 1.0,
                         min: temp,
@@ -69,7 +69,7 @@ fn main() {
     let stations = BTreeMap::from_iter(
         stations
             .into_iter()
-            .map(|(k, v)| (unsafe { String::from_utf8_unchecked(k) }, v)),
+            .map(|(k, v)| (unsafe { std::str::from_utf8_unchecked(k) }, v)),
     );
 
     for (station, stats) in stations {
