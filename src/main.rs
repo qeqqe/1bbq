@@ -2,7 +2,7 @@ use core::f64;
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::{BufRead, BufReader},
+    os::fd::AsRawFd,
     str::from_utf8_unchecked,
 };
 
@@ -29,10 +29,11 @@ fn main() {
 
     let file = File::open("measurements/measurements.txt").unwrap();
 
-    let reader = BufReader::new(file);
+    // let reader = BufReader::new(file);
 
-    for line in reader.split(b'\n') {
-        let line = line.unwrap();
+    let map = new(&file);
+
+    for line in map.split(|l| *l == b'\n') {
         let mut fields = line.splitn(2, |c| *c == b';');
         let station = fields.next().unwrap();
         let temp = fields.next().unwrap();
@@ -79,5 +80,28 @@ fn main() {
             stats.accumulate / stats.total,
             stats.max
         );
+    }
+}
+
+fn new(f: &File) -> &'_ [u8] {
+    let len = f.metadata().unwrap().len();
+    unsafe {
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            len as libc::size_t,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            f.as_raw_fd(),
+            0,
+        );
+
+        if ptr == libc::MAP_FAILED {
+            panic!("{:?}", std::io::Error::last_os_error());
+        } else {
+            if libc::madvise(ptr, len as libc::size_t, libc::MADV_SEQUENTIAL) != 0 {
+                panic!("{:?}", std::io::Error::last_os_error())
+            }
+            std::slice::from_raw_parts(ptr as *const u8, len as usize)
+        }
     }
 }
