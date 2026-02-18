@@ -1,9 +1,8 @@
 use core::f64;
-use std::{
-    collections::{BTreeMap, HashMap},
-    fs::File,
-    os::fd::AsRawFd,
-};
+use std::{collections::BTreeMap, fs::File, os::fd::AsRawFd};
+
+use crate::custom_hash::FastHashMap;
+mod custom_hash;
 
 struct StationData {
     total: f64,
@@ -24,7 +23,7 @@ impl Default for StationData {
 }
 
 fn main() {
-    let mut stations: HashMap<Vec<u8>, StationData> = HashMap::new();
+    let mut stations: FastHashMap<Vec<u8>, StationData> = FastHashMap::default();
 
     let file = File::open("measurements/measurements.txt").unwrap();
 
