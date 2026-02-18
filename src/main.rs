@@ -3,7 +3,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
     os::fd::AsRawFd,
-    str::from_utf8_unchecked,
 };
 
 struct StationData {
@@ -34,10 +33,12 @@ fn main() {
     let map = new(&file);
 
     for line in map.split(|l| *l == b'\n') {
+        if line.is_empty() {
+            break;
+        }
         let mut fields = line.splitn(2, |c| *c == b';');
         let station = fields.next().unwrap();
-        let temp = fields.next().unwrap();
-        let temp: f64 = unsafe { from_utf8_unchecked(temp) }.parse().unwrap();
+        let temp: f64 = parse_temp(fields.next().unwrap()) as f64;
         match stations.get_mut(station) {
             Some(entry) => {
                 entry.total += 1.0;
@@ -104,4 +105,24 @@ fn new(f: &File) -> &'_ [u8] {
             std::slice::from_raw_parts(ptr as *const u8, len as usize)
         }
     }
+}
+
+fn parse_temp(bytes: &[u8]) -> i32 {
+    let (neg, bytes) = if bytes[0] == b'-' {
+        (true, &bytes[1..])
+    } else {
+        (false, bytes)
+    };
+
+    let val = match bytes.len() {
+        3 => (bytes[0] - b'0') as i32 * 10 + (bytes[2] - b'0') as i32,
+        4 => {
+            (bytes[0] - b'0') as i32 * 100
+                + (bytes[1] - b'0') as i32 * 10
+                + (bytes[3] - b'0') as i32
+        } // XX.X
+        _ => unreachable!(),
+    };
+
+    if neg { -val } else { val }
 }
