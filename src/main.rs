@@ -1,6 +1,6 @@
 #![feature(portable_simd)]
 
-use crate::custom_hash::FastHashMap;
+use crate::custom_hash::{FastHashBuilder, FastHashMap};
 use libc::{c_int, memchr};
 use std::{
     collections::BTreeMap,
@@ -28,8 +28,8 @@ impl Default for StationData {
 }
 
 fn main() {
-    let mut stations: FastHashMap<&[u8], StationData> = FastHashMap::default();
-
+    let mut stations: FastHashMap<&[u8], StationData> =
+        FastHashMap::with_capacity_and_hasher(413, FastHashBuilder::default());
     let file = File::open("measurements/measurements.txt").unwrap();
 
     let map = new(&file);
