@@ -35,25 +35,12 @@ fn main() {
     let map = new(&file);
     let mut at = 0;
     loop {
-        let current = &map[at..];
-        let next_newline = parse_line(current, b'\n');
-        let line = if next_newline.is_null() {
-            current
-        } else {
-            let len = unsafe { (next_newline as *const u8).offset_from(current.as_ptr()) } as usize;
-            &current[..len]
-        };
-
-        at += line.len() + 1;
+        let line = parse_line(map, &mut at);
         if line.is_empty() {
             break;
         }
 
-        let index = parse_line(line, b';');
-
-        let index = Some(index as usize - line.as_ptr() as usize).unwrap();
-        let (station, temp) =
-            unsafe { (line.get_unchecked(..index), line.get_unchecked(index + 1..)) };
+        let (station, temp) = split_deli(line);
         let temp = parse_temp(temp);
         match stations.get_mut(station) {
             Some(entry) => {
@@ -100,14 +87,32 @@ fn main() {
     }
 }
 
-fn parse_line(line: &[u8], delimeter: u8) -> *mut c_void {
-    unsafe {
+fn parse_line<'a>(map: &'a [u8], pos: &mut usize) -> &'a [u8] {
+    let current = &map[*pos..];
+    let next_newline = unsafe {
         memchr(
-            line.as_ptr() as *const c_void,
-            delimeter as c_int,
-            line.len(),
+            current.as_ptr() as *const c_void,
+            b'\n' as c_int,
+            current.len(),
         )
-    }
+    };
+    let line = if next_newline.is_null() {
+        current
+    } else {
+        let index = next_newline as usize - current.as_ptr() as usize;
+        &current[..index]
+    };
+
+    *pos += line.len() + 1;
+    line
+}
+
+fn split_deli(line: &[u8]) -> (&[u8], &[u8]) {
+    let index = unsafe { memchr(line.as_ptr() as *const c_void, b';' as c_int, line.len()) };
+
+    let index = Some(index as usize - line.as_ptr() as usize).unwrap();
+
+    unsafe { (line.get_unchecked(..index), line.get_unchecked(index + 1..)) }
 }
 
 fn new(f: &File) -> &'_ [u8] {
