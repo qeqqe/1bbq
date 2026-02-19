@@ -1,23 +1,27 @@
-use core::f64;
-use std::{collections::BTreeMap, fs::File, os::fd::AsRawFd};
+use libc::c_int;
 
 use crate::custom_hash::FastHashMap;
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    os::{fd::AsRawFd, raw::c_void},
+};
 mod custom_hash;
 
 struct StationData {
-    total: f64,
-    min: f64,
-    max: f64,
-    accumulate: f64,
+    total: i64,
+    min: i64,
+    max: i64,
+    accumulate: i64,
 }
 
 impl Default for StationData {
     fn default() -> Self {
         Self {
-            total: 0.0,
-            min: f64::MAX,
-            max: f64::MIN,
-            accumulate: 0.0,
+            total: 0,
+            min: i64::MAX,
+            max: i64::MIN,
+            accumulate: 0,
         }
     }
 }
@@ -27,20 +31,28 @@ fn main() {
 
     let file = File::open("measurements/measurements.txt").unwrap();
 
-    // let reader = BufReader::new(file);
-
     let map = new(&file);
-
-    for line in map.split(|l| *l == b'\n') {
+    let mut at = 0;
+    loop {
+        let rest = &map[at..];
+        let next_newline =
+            unsafe { libc::memchr(rest.as_ptr() as *const c_void, b'\n' as c_int, rest.len()) };
+        let line = if next_newline.is_null() {
+            rest
+        } else {
+            let len = unsafe { (next_newline as *const u8).offset_from(rest.as_ptr()) } as usize;
+            &rest[..len]
+        };
+        at += line.len() + 1;
         if line.is_empty() {
             break;
         }
         let mut fields = line.splitn(2, |c| *c == b';');
         let station = fields.next().unwrap();
-        let temp: f64 = parse_temp(fields.next().unwrap()) as f64;
+        let temp = parse_temp(fields.next().unwrap());
         match stations.get_mut(station) {
             Some(entry) => {
-                entry.total += 1.0;
+                entry.total += 1;
 
                 if entry.max < temp {
                     entry.max = temp;
@@ -56,7 +68,7 @@ fn main() {
                 stations.insert(
                     station,
                     StationData {
-                        total: 1.0,
+                        total: 1,
                         min: temp,
                         max: temp,
                         accumulate: temp,
@@ -76,9 +88,9 @@ fn main() {
         print!(
             "{{{:?}={}/{:.1}/{:.1}}}, ",
             station,
-            stats.min,
-            stats.accumulate / stats.total,
-            stats.max
+            stats.min as f64 / 10.0,
+            (stats.accumulate as f64 / stats.total as f64) / 10.0,
+            stats.max as f64 / 10.0
         );
     }
 }
@@ -106,19 +118,19 @@ fn new(f: &File) -> &'_ [u8] {
     }
 }
 
-fn parse_temp(bytes: &[u8]) -> i32 {
+fn parse_temp(bytes: &[u8]) -> i64 {
     let (neg, bytes) = if bytes[0] == b'-' {
         (true, &bytes[1..])
     } else {
         (false, bytes)
     };
 
-    let val = match bytes.len() {
-        3 => (bytes[0] - b'0') as i32 * 10 + (bytes[2] - b'0') as i32,
+    let val: i64 = match bytes.len() {
+        3 => (bytes[0] - b'0') as i64 * 10 + (bytes[2] - b'0') as i64, // X.X
         4 => {
-            (bytes[0] - b'0') as i32 * 100
-                + (bytes[1] - b'0') as i32 * 10
-                + (bytes[3] - b'0') as i32
+            (bytes[0] - b'0') as i64 * 100
+                + (bytes[1] - b'0') as i64 * 10
+                + (bytes[3] - b'0') as i64
         } // XX.X
         _ => unreachable!(),
     };
