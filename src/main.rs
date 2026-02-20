@@ -1,4 +1,5 @@
 #![feature(portable_simd)]
+use crate::probe_map::FastMap;
 use libc::{c_int, memchr};
 use std::{
     collections::BTreeMap,
@@ -6,9 +7,7 @@ use std::{
     os::{fd::AsRawFd, raw::c_void},
 };
 
-use crate::custom_hasher::{FastHashBuilder, FastHashMap};
-
-mod custom_hasher;
+mod probe_map;
 
 struct StationData {
     total: i64,
@@ -27,65 +26,57 @@ impl Default for StationData {
         }
     }
 }
-
 fn main() {
-    let mut stations: FastHashMap<&[u8], StationData> =
-        FastHashMap::with_capacity_and_hasher(413, FastHashBuilder::default());
-    let file = File::open("measurements/measurements.txt").unwrap();
+    let mut stations = FastMap::new();
 
-    let map = new(&file);
+    let map = new();
     let mut at = 0;
+
     loop {
         let line = parse_line(map, &mut at);
         if line.is_empty() {
             break;
         }
 
-        let (station, temp) = split_deli(line);
-        let temp = parse_temp(temp);
-        match stations.get_mut(station) {
-            Some(entry) => {
-                entry.total += 1;
+        let (station, temp_bytes) = split_deli(line);
+        let temp = parse_temp(temp_bytes);
+        let entry = stations.get_mut_or_create(station);
 
-                if entry.max < temp {
-                    entry.max = temp;
-                }
-
-                if entry.min > temp {
-                    entry.min = temp;
-                }
-
-                entry.accumulate += temp;
-            }
-            None => {
-                stations.insert(
-                    station,
-                    StationData {
-                        total: 1,
-                        min: temp,
-                        max: temp,
-                        accumulate: temp,
-                    },
-                );
-            }
+        entry.total += 1;
+        entry.accumulate += temp;
+        if temp < entry.min {
+            entry.min = temp;
+        }
+        if temp > entry.max {
+            entry.max = temp;
         }
     }
 
-    let stations = BTreeMap::from_iter(
-        stations
-            .into_iter()
-            .map(|(k, v)| (unsafe { std::str::from_utf8_unchecked(k) }, v)),
-    );
+    let mut sorted_stations = BTreeMap::new();
+    for i in 0..16384 {
+        if stations.keys[i] != 0 {
+            let name = unsafe {
+                let s = std::slice::from_raw_parts(stations.keys[i] as *const u8, stations.lens[i]);
+                std::str::from_utf8_unchecked(s)
+            };
+            sorted_stations.insert(name, &stations.values[i]);
+        }
+    }
 
-    for (station, stats) in stations {
+    print!("{{");
+    for (i, (station, stats)) in sorted_stations.iter().enumerate() {
+        if i > 0 {
+            print!(", ");
+        }
         print!(
-            "{{{:?}={}/{:.1}/{:.1}}}, ",
+            "{}={:.1}/{:.1}/{:.1}",
             station,
             stats.min as f64 / 10.0,
             (stats.accumulate as f64 / stats.total as f64) / 10.0,
             stats.max as f64 / 10.0
         );
     }
+    println!("}}");
 }
 #[inline(always)]
 fn parse_line<'a>(map: &'a [u8], pos: &mut usize) -> &'a [u8] {
@@ -117,7 +108,8 @@ fn split_deli(line: &[u8]) -> (&[u8], &[u8]) {
 }
 
 #[inline(always)]
-fn new(f: &File) -> &'_ [u8] {
+fn new<'a>() -> &'a [u8] {
+    let f = File::open("measurements/measurements.txt").unwrap();
     let len = f.metadata().unwrap().len();
     unsafe {
         let ptr = libc::mmap(
@@ -132,7 +124,9 @@ fn new(f: &File) -> &'_ [u8] {
         if ptr == libc::MAP_FAILED {
             panic!("{:?}", std::io::Error::last_os_error());
         } else {
-            if libc::madvise(ptr, len as libc::size_t, libc::MADV_HUGEPAGE) != 0 {
+            if libc::madvise(ptr, len as libc::size_t, libc::MADV_HUGEPAGE) != 0
+                && libc::madvise(ptr, len as libc::size_t, libc::MADV_SEQUENTIAL) != 0
+            {
                 panic!("{:?}", std::io::Error::last_os_error())
             }
             std::slice::from_raw_parts(ptr as *const u8, len as usize)

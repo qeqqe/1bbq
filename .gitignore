@@ -2,3 +2,5 @@
 measurements/*
 perf*
 temp
+.idea
+.vscode
