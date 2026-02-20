@@ -1,13 +1,14 @@
 #![feature(portable_simd)]
-
-use crate::custom_hash::{FastHashBuilder, FastHashMap};
 use libc::{c_int, memchr};
 use std::{
     collections::BTreeMap,
     fs::File,
     os::{fd::AsRawFd, raw::c_void},
 };
-mod custom_hash;
+
+use crate::custom_hasher::{FastHashBuilder, FastHashMap};
+
+mod custom_hasher;
 
 struct StationData {
     total: i64,
@@ -86,7 +87,7 @@ fn main() {
         );
     }
 }
-
+#[inline(always)]
 fn parse_line<'a>(map: &'a [u8], pos: &mut usize) -> &'a [u8] {
     let current = &map[*pos..];
     let next_newline = unsafe {
@@ -106,15 +107,16 @@ fn parse_line<'a>(map: &'a [u8], pos: &mut usize) -> &'a [u8] {
     *pos += line.len() + 1;
     line
 }
-
+#[inline(always)]
 fn split_deli(line: &[u8]) -> (&[u8], &[u8]) {
     let index = unsafe { memchr(line.as_ptr() as *const c_void, b';' as c_int, line.len()) };
 
-    let index = Some(index as usize - line.as_ptr() as usize).unwrap();
+    let index = index as usize - line.as_ptr() as usize;
 
     unsafe { (line.get_unchecked(..index), line.get_unchecked(index + 1..)) }
 }
 
+#[inline(always)]
 fn new(f: &File) -> &'_ [u8] {
     let len = f.metadata().unwrap().len();
     unsafe {
@@ -130,7 +132,7 @@ fn new(f: &File) -> &'_ [u8] {
         if ptr == libc::MAP_FAILED {
             panic!("{:?}", std::io::Error::last_os_error());
         } else {
-            if libc::madvise(ptr, len as libc::size_t, libc::MADV_SEQUENTIAL) != 0 {
+            if libc::madvise(ptr, len as libc::size_t, libc::MADV_HUGEPAGE) != 0 {
                 panic!("{:?}", std::io::Error::last_os_error())
             }
             std::slice::from_raw_parts(ptr as *const u8, len as usize)
@@ -138,6 +140,7 @@ fn new(f: &File) -> &'_ [u8] {
     }
 }
 
+#[inline(always)]
 fn parse_temp(bytes: &[u8]) -> i64 {
     let (neg, bytes) = if bytes[0] == b'-' {
         (true, &bytes[1..])
