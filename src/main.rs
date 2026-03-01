@@ -1,40 +1,20 @@
 #![feature(portable_simd)]
-use crate::probe_map::FastMap;
-use libc::{c_int, memchr};
-use std::{
-    collections::BTreeMap,
-    fs::File,
-    os::{fd::AsRawFd, raw::c_void},
-    thread,
-};
+use crate::probe_map::{CAP, FastMap, StationData};
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::os::fd::AsRawFd;
+use std::thread;
 
 mod probe_map;
-
-struct StationData {
-    min: i16,
-    max: i16,
-    count: u32,
-    sum: i32,
-}
-
-impl Default for StationData {
-    fn default() -> Self {
-        Self {
-            min: i16::MAX,
-            max: i16::MIN,
-            count: 0,
-            sum: 0,
-        }
-    }
-}
 
 fn main() {
     let data = new();
     let len = data.len();
+    let ptr = data.as_ptr();
 
     let num_threads = thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(8);
+        .unwrap_or(16);
     let chunk_size = len / num_threads;
 
     let maps = thread::scope(|s| {
@@ -46,23 +26,20 @@ fn main() {
                 len
             } else {
                 let mut e = start + chunk_size;
-
-                while e < len && data[e] != b'\n' {
-                    e += 1;
+                unsafe {
+                    while e < len && *ptr.add(e) != b'\n' {
+                        e += 1;
+                    }
                 }
                 e + 1
             };
 
-            if start >= len {
-                break;
-            }
-            if end > len {
-                end = len;
-            }
+            let chunk_addr = unsafe { ptr.add(start) } as usize;
+            let chunk_len = end - start;
 
-            let slice = &data[start..end];
-
-            handles.push(s.spawn(move || process_chunk(slice)));
+            handles.push(
+                s.spawn(move || unsafe { process_chunk(chunk_addr as *const u8, chunk_len) }),
+            );
 
             start = end;
         }
@@ -74,32 +51,39 @@ fn main() {
     });
 
     let mut final_map = FastMap::new();
-
     for map in maps {
-        for i in 0..probe_map::CAP {
+        for i in 0..CAP {
             if map.keys[i] != 0 {
-                let key_ptr = map.keys[i] as *const u8;
-                let key_len = map.lens[i];
-                let key_slice = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
+                unsafe {
+                    let key_ptr = map.keys[i] as *const u8;
+                    let key_len = map.lens[i];
 
-                let val = &map.values[i];
+                    let first = (key_ptr as *const u64).read_unaligned();
+                    let hash = if key_len >= 8 {
+                        let last = (key_ptr.add(key_len - 8) as *const u64).read_unaligned();
+                        first.rotate_left(5) ^ last
+                    } else {
+                        first
+                    };
 
-                let entry = final_map.get_mut_or_create(key_slice);
+                    let entry = final_map.get_mut_or_create(key_ptr, key_len, hash);
+                    let val = &map.values[i];
 
-                if val.min < entry.min {
-                    entry.min = val.min;
+                    if val.min < entry.min {
+                        entry.min = val.min;
+                    }
+                    if val.max > entry.max {
+                        entry.max = val.max;
+                    }
+                    entry.sum += val.sum;
+                    entry.count += val.count;
                 }
-                if val.max > entry.max {
-                    entry.max = val.max;
-                }
-                entry.sum += val.sum;
-                entry.count += val.count;
             }
         }
     }
 
     let mut sorted_stations = BTreeMap::new();
-    for i in 0..probe_map::CAP {
+    for i in 0..CAP {
         if final_map.keys[i] != 0 {
             let name = unsafe {
                 let s =
@@ -126,67 +110,71 @@ fn main() {
     println!("}}");
 }
 
-fn process_chunk(chunk: &[u8]) -> FastMap {
+#[inline(always)]
+unsafe fn process_chunk(mut ptr: *const u8, len: usize) -> FastMap {
     let mut map = FastMap::new();
-    let mut ptr = chunk.as_ptr();
-    let end = unsafe { ptr.add(chunk.len()) };
+    let end = ptr.add(len);
 
     while ptr < end {
-        unsafe {
-            let mut semi_ptr = memchr(ptr as *const c_void, b';' as c_int, 100) as *const u8;
+        let mut name_hash = (ptr as *const u64).read_unaligned();
+        let mut semi_pos;
 
-            if semi_ptr.is_null() {
-                semi_ptr = memchr(
-                    ptr as *const c_void,
-                    b';' as c_int,
-                    (end as usize) - (ptr as usize),
-                ) as *const u8;
+        let input = name_hash ^ 0x3B3B3B3B3B3B3B3B;
+        let tmp = (input.wrapping_sub(0x0101010101010101)) & (!input) & 0x8080808080808080;
+
+        if tmp != 0 {
+            semi_pos = (tmp.trailing_zeros() >> 3) as usize;
+        } else {
+            semi_pos = 8;
+            while *ptr.add(semi_pos) != b';' {
+                semi_pos += 1;
             }
 
-            let name_len = semi_ptr as usize - ptr as usize;
-            let name_slice = std::slice::from_raw_parts(ptr, name_len);
-
-            let num_start = semi_ptr.add(1);
-
-            let val: i16;
-            let next_line: *const u8;
-
-            let b0 = *num_start;
-            if b0 == b'-' {
-                let b1 = *num_start.add(1);
-                if *num_start.add(3) == b'.' {
-                    val = -((b1 as i16 - 48) * 100
-                        + (*num_start.add(2) as i16 - 48) * 10
-                        + (*num_start.add(4) as i16 - 48));
-                    next_line = num_start.add(6);
-                } else {
-                    val = -((b1 as i16 - 48) * 10 + (*num_start.add(3) as i16 - 48));
-                    next_line = num_start.add(5);
-                }
-            } else {
-                if *num_start.add(2) == b'.' {
-                    val = (b0 as i16 - 48) * 100
-                        + (*num_start.add(1) as i16 - 48) * 10
-                        + (*num_start.add(3) as i16 - 48);
-                    next_line = num_start.add(5);
-                } else {
-                    val = (b0 as i16 - 48) * 10 + (*num_start.add(2) as i16 - 48);
-                    next_line = num_start.add(4);
-                }
-            }
-
-            let entry = map.get_mut_or_create(name_slice);
-            entry.count += 1;
-            entry.sum += val as i32;
-            if val < entry.min {
-                entry.min = val;
-            }
-            if val > entry.max {
-                entry.max = val;
-            }
-
-            ptr = next_line;
+            let last_word = (ptr.add(semi_pos - 8) as *const u64).read_unaligned();
+            name_hash = name_hash.rotate_left(5) ^ last_word;
         }
+
+        let entry = map.get_mut_or_create(ptr, semi_pos, name_hash);
+
+        ptr = ptr.add(semi_pos + 1);
+        let num_word = (ptr as *const u64).read_unaligned();
+
+        let val: i16;
+        let step: usize;
+
+        let neg = (num_word & 0xFF) == 0x2D;
+
+        if !neg {
+            if ((num_word >> 8) & 0xFF) == 0x2E {
+                val = (((num_word & 0xF) * 10) + ((num_word >> 16) & 0xF)) as i16;
+                step = 4;
+            } else {
+                val = (((num_word & 0xF) * 100)
+                    + (((num_word >> 8) & 0xF) * 10)
+                    + ((num_word >> 24) & 0xF)) as i16;
+                step = 5;
+            }
+        } else {
+            let s = num_word >> 8;
+            if ((s >> 8) & 0xFF) == 0x2E {
+                val = -(((s & 0xF) * 10 + ((s >> 16) & 0xF)) as i16);
+                step = 5;
+            } else {
+                val = -(((s & 0xF) * 100 + ((s >> 8) & 0xF) * 10 + ((s >> 24) & 0xF)) as i16);
+                step = 6;
+            }
+        }
+
+        entry.count += 1;
+        entry.sum += val as i64;
+        if val < entry.min {
+            entry.min = val;
+        }
+        if val > entry.max {
+            entry.max = val;
+        }
+
+        ptr = ptr.add(step);
     }
     map
 }
@@ -207,7 +195,6 @@ fn new<'a>() -> &'a [u8] {
         if ptr == libc::MAP_FAILED {
             panic!("mmap failed");
         }
-
         libc::madvise(ptr, len as libc::size_t, libc::MADV_HUGEPAGE);
         std::slice::from_raw_parts(ptr as *const u8, len as usize)
     }
